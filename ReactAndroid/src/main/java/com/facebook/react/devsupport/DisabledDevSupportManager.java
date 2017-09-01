@@ -70,6 +70,16 @@ public class DisabledDevSupportManager implements DevSupportManager {
   }
 
   @Override
+  public void startInspector() {
+
+  }
+
+  @Override
+  public void stopInspector() {
+
+  }
+
+  @Override
   public boolean getDevSupportEnabled() {
     return false;
   }
@@ -106,11 +116,6 @@ public class DisabledDevSupportManager implements DevSupportManager {
 
   @Override
   public String getDownloadedJSBundleFile() {
-    return null;
-  }
-
-  @Override
-  public String getHeapCaptureUploadUrl() {
     return null;
   }
 
