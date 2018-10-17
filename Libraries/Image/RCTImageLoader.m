@@ -1,10 +1,8 @@
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #import <stdatomic.h>
@@ -48,11 +46,30 @@
     NSMutableArray *_pendingDecodes;
     NSInteger _scheduledDecodes;
     NSUInteger _activeBytes;
+  __weak id<RCTImageRedirectProtocol> _redirectDelegate;
 }
 
 @synthesize bridge = _bridge;
 
 RCT_EXPORT_MODULE()
+
+- (instancetype)init
+{
+  return [self initWithRedirectDelegate:nil];
+}
+
++ (BOOL)requiresMainQueueSetup
+{
+    return NO;
+}
+
+- (instancetype)initWithRedirectDelegate:(id<RCTImageRedirectProtocol>)redirectDelegate
+{
+    if (self = [super init]) {
+        _redirectDelegate = redirectDelegate;
+    }
+    return self;
+}
 
 - (void)setUp
 {
@@ -66,7 +83,7 @@ RCT_EXPORT_MODULE()
 
 - (float)handlerPriority
 {
-    return 1;
+    return 2;
 }
 
 - (id<RCTImageCache>)imageCache
@@ -314,7 +331,10 @@ static UIImage *RCTResizeImageIfNeeded(UIImage *image,
 
         // Add missing png extension
         if (request.URL.fileURL && request.URL.pathExtension.length == 0) {
-            mutableRequest.URL = [NSURL fileURLWithPath:[request.URL.path stringByAppendingPathExtension:@"png"]];
+            mutableRequest.URL = [request.URL URLByAppendingPathExtension:@"png"];
+        }
+        if (_redirectDelegate != nil) {
+            mutableRequest.URL = [_redirectDelegate redirectAssetsURL:mutableRequest.URL];
         }
         request = mutableRequest;
     }
@@ -759,45 +779,69 @@ static UIImage *RCTResizeImageIfNeeded(UIImage *image,
                                 completionBlock:completion];
 }
 
+- (NSDictionary *)getImageCacheStatus:(NSArray *)requests
+{
+  NSMutableDictionary *results = [NSMutableDictionary dictionary];
+  for (id request in requests) {
+    NSURLRequest *urlRequest = [RCTConvert NSURLRequest:request];
+    if (urlRequest) {
+      NSCachedURLResponse *cachedResponse = [NSURLCache.sharedURLCache cachedResponseForRequest:urlRequest];
+      if (cachedResponse) {
+        if (cachedResponse.storagePolicy == NSURLCacheStorageAllowedInMemoryOnly) {
+          [results setObject:@"memory" forKey:urlRequest.URL.absoluteString];
+        } else {
+          [results setObject:@"disk" forKey:urlRequest.URL.absoluteString];
+        }
+      }
+    }
+  }
+  return results;
+}
+
 #pragma mark - RCTURLRequestHandler
 
 - (BOOL)canHandleRequest:(NSURLRequest *)request
 {
-    NSURL *requestURL = request.URL;
+  NSURL *requestURL = request.URL;
 
-    // If the data being loaded is a video, return NO
-    // Even better may be to implement this on the RCTImageURLLoader that would try to load it,
-    // but we'd have to run the logic both in RCTPhotoLibraryImageLoader and
-    // RCTAssetsLibraryRequestHandler. Once we drop iOS7 though, we'd drop
-    // RCTAssetsLibraryRequestHandler and can move it there.
-    static NSRegularExpression *videoRegex = nil;
-    if (!videoRegex) {
-      NSError *error = nil;
-      videoRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:&|^)ext=MOV(?:&|$)"
-                                                             options:NSRegularExpressionCaseInsensitive
-                                                               error:&error];
-      if (error) {
-        RCTLogError(@"%@", error);
-      }
+  // If the data being loaded is a video, return NO
+  // Even better may be to implement this on the RCTImageURLLoader that would try to load it,
+  // but we'd have to run the logic both in RCTPhotoLibraryImageLoader and
+  // RCTAssetsLibraryRequestHandler. Once we drop iOS7 though, we'd drop
+  // RCTAssetsLibraryRequestHandler and can move it there.
+  static NSRegularExpression *videoRegex;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    NSError *error = nil;
+    videoRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:&|^)ext=MOV(?:&|$)"
+                                                           options:NSRegularExpressionCaseInsensitive
+                                                             error:&error];
+    if (error) {
+      RCTLogError(@"%@", error);
     }
+  });
 
-    NSString *query = requestURL.query;
-    if (query != nil && [videoRegex firstMatchInString:query
-                                               options:0
-                                                 range:NSMakeRange(0, query.length)]) {
-      return NO;
-    }
-
-    for (id<RCTImageURLLoader> loader in _loaders) {
-        // Don't use RCTImageURLLoader protocol for modules that already conform to
-        // RCTURLRequestHandler as it's inefficient to decode an image and then
-        // convert it back into data
-        if (![loader conformsToProtocol:@protocol(RCTURLRequestHandler)] &&
-            [loader canLoadImageURL:requestURL]) {
-            return YES;
-        }
-    }
+  NSString *query = requestURL.query;
+  if (
+    query != nil &&
+    [videoRegex firstMatchInString:query
+                           options:0
+                             range:NSMakeRange(0, query.length)]
+  ) {
     return NO;
+  }
+
+  for (id<RCTImageURLLoader> loader in _loaders) {
+    // Don't use RCTImageURLLoader protocol for modules that already conform to
+    // RCTURLRequestHandler as it's inefficient to decode an image and then
+    // convert it back into data
+    if (![loader conformsToProtocol:@protocol(RCTURLRequestHandler)] &&
+      [loader canLoadImageURL:requestURL]) {
+      return YES;
+    }
+  }
+
+  return NO;
 }
 
 - (id)sendRequest:(NSURLRequest *)request withDelegate:(id<RCTURLRequestDelegate>)delegate
